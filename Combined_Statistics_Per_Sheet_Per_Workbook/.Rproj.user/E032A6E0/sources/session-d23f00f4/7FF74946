@@ -1,0 +1,26 @@
+{
+    "id": "7FF74946",
+    "path": "/cloud/project/Systematic_Review_Graph_Plotter/app.R",
+    "project_path": "Systematic_Review_Graph_Plotter/app.R",
+    "type": "r_source",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1714652329038.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "99,48",
+        "scrollLine": "92"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1714845066,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1714845066898,
+    "read_only": false,
+    "read_only_alternatives": []
+}

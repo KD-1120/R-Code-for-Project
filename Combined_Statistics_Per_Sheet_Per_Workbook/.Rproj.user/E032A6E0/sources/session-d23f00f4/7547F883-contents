@@ -1,0 +1,261 @@
+#Load required libraries
+library(tidyverse)       # For data manipulation and visualization
+library(extrafont)       # For importing system fonts
+library(dslabs)          # Theme for plots
+library(Cairo)           # For Unicode support in PDF plots
+library(gridExtra)       # For arranging plots
+library(readxl)
+#install.packages("ggtext")
+library(ggtext)
+library(grid)
+
+
+mch_data <- read_excel(file.choose(), sheet = "HCT (%)", range = cell_rows(1:100))
+
+
+#Sorts data into specific groups
+sort_data <- function(data, author, ll, ul, gender){
+  data |>
+    select(Author = {{author}},
+           L.L = {{ll}},
+           U.L = {{ul}},
+           gender = {{gender}}) %>%
+    mutate(
+      gender = if_else({{ gender }} == 1, "Male", "Female"),
+      AuthorList = str_split(Author, " et al\\.") %>% map_chr(~ paste(.x, collapse = "")),
+      Number = row_number(),
+      Author = if_else(Number == 1, paste0(Author, ", ", L.L, " (", U.L, ")"), paste0(AuthorList, " (", Number, ")"))
+    )
+}
+
+
+#Combines all the sorted data into one dataframe
+combined_data <- bind_rows(male_data <- sort_data(mch_data, Author, L_L, U_L, gender) %>%
+                             filter(gender == "Male"),
+                           female_data <- sort_data(mch_data, Author, L_L, U_L, gender) %>%
+                             filter(gender == "Female")) %>%
+  drop_na()
+
+#view(combined_data)
+
+#Process combined data
+process_data <- function(data) {
+  data |>
+    # Select relevant columns
+    select(Author,L.L,U.L,gender) |>
+    # Calculate the difference between upper and lower limits
+    mutate(diff = round(U.L - L.L, 2)) |>
+    # Filter out rows with non-positive differences
+    filter(diff > 0)
+}
+all_data <- process_data(combined_data)|>
+  mutate(x_pos = L.L + (diff / 2))
+#view(all_data)
+
+#pivoted data
+pivoted_data <- all_data |>
+  pivot_longer(cols = c(L.L, U.L)) |>
+  rename(hb = name)
+
+
+# Create a new variable to store the order for reordering the plots
+all_data$ord <- nrow(all_data):1
+
+# Mean and standard deviation per group
+stats <- pivoted_data |>
+  group_by(gender,hb) |>
+  summarise(mean = mean(value), SD = sd(value)) |>
+  mutate(meanpos=mean+1*SD, meanneg=mean-1*SD)
+
+#Filters and stores mean and standard deviation for each group in a specific variable.
+stats_male <- stats %>%
+  filter(gender== "Male")
+
+stats_female <- stats %>%
+  filter(gender== "Female")
+
+# Creates dataframe for mean and sd for annotation
+find_mean_sd <- function(gender_age) {
+  L_L_data <- gender_age %>%
+    filter(hb == "L.L")
+  U_L_data <- gender_age %>%
+    filter(hb == "U.L")
+  
+  # Extract mean and sd for L.L
+  mean_L.L <- round(L_L_data$mean, 2)
+  sd_L.L <- round(L_L_data$SD, 2)
+  
+  # Extract mean and sd for U.L
+  mean_U.L <- round(U_L_data$mean, 2)
+  sd_U.L <- round(U_L_data$SD, 2)
+  
+  # Create a data frame to store the results
+  results <- data.frame(
+    A = c("LRL", "URL"),
+    Mean = c(mean_L.L, mean_U.L),
+    SD = c(sd_L.L, sd_U.L)
+  )
+  colnames(results)<- c(" ", "Mean", "SD")
+  return(results)
+}
+
+
+male_mean_sd <- find_mean_sd(stats_male)
+female_mean_sd <- find_mean_sd(stats_female)
+
+
+
+# Separate data by gender and age_group for plotting
+male_data <- all_data |> filter(gender == "Male")
+female_data <- all_data |> filter(gender == "Female")
+
+
+
+#List of the analyzers
+analyzer_name <- all_data |>
+  select(vendor)
+
+
+last_analyzer_x_pos <- adult_female_data %>%
+  distinct(Analyzer) %>%  # Get unique values of Analyzer
+  arrange(desc(Analyzer)) %>%  # Sort in descending order
+  slice(1) %>%  # Take the first (i.e., last) value
+  pull(Analyzer) %>%
+  tail(n = 1)
+
+last_analyzer_x_pos <- max(adult_female_data$U.L)
+print(last_analyzer_x_pos)
+
+
+stats_male %>%
+  filter(hb == "U.L") %>%
+  pull(meanneg) %>%
+  round(2)
+
+#Generate plots. 
+generate_plot  <- function(data, gender_stats, first_analyzer, last_analyzer, annotation, gender, sign) {
+  data$Author <- as.factor(data$Author)
+  ggplot(data) +
+    
+    # add mean and standard deviation. Check thoroughly because it needs to be the meanpos of the L.L and meanneg for the L.L.
+    geom_rect(aes(xmin = gender_stats %>%
+                    filter(hb == "U.L") %>%
+                    pull(meanneg) %>%
+                    round(2),
+                  xmax = gender_stats %>%
+                    filter(hb == "U.L") %>%
+                    pull(meanpos) %>%
+                    round(2),
+                  ymin = -Inf, ymax = Inf),  # Continuous y-axis from top to bottom
+              fill = "#00BFC4",alpha=0.05) +
+    geom_vline(xintercept = gender_stats %>%
+                 filter(hb == "U.L") %>%
+                 pull(mean),
+               color = "#762a83",  linewidth= 1, linetype="dashed", size = .5, alpha = .5)  +
+    geom_rect(aes(xmin = gender_stats %>%
+                    filter(hb == "L.L") %>%
+                    pull(meanneg),
+                  xmax = gender_stats %>%
+                    filter(hb == "L.L") %>%
+                    pull(meanpos),
+                  ymin = -Inf, ymax = Inf),  # Continuous y-axis from top to bottom
+              fill = "#F8766D",alpha=0.05) +
+    geom_vline(xintercept = gender_stats %>%
+                 filter(hb == "L.L") %>%
+                 pull(mean),
+               linewidth= 1, linetype="dashed", size = .5, alpha = .5, color = "#762a83") +
+    
+    # add point range
+    geom_segment(aes(y = reorder(Author, ord),
+                     x = L.L,  # Starting point
+                     yend = reorder(Author, ord),
+                     xend = U.L,  # Ending point
+                     group = Author),
+                 color = "#000000", size = 4.5 , alpha = .8) +
+    
+    
+    # add points
+    geom_point(aes(x = L.L, y = reorder(Author, ord), color = "#F8766D"), size = 4.5, show.legend = FALSE) +
+    geom_point(aes(x = U.L, y = reorder(Author, ord), color = "#00BFC4"), size = 4.5, show.legend = FALSE) +
+    
+    # color points
+    scale_color_manual(values = c( "#00BFC4", "#F8766D")) +
+    
+    # add annotations for mean and standard deviations. Can modify to x = mean - ((U.L-L.L)/4)
+    #geom_text(data = gender_age_stats, aes(x = mean-0.3, y = first_analyzer, label = "MEAN"), angle = 90, size = 2.2, color = "#009688", family = "Segoe UI") +
+    #geom_text(data = gender_age_stats, aes(x =meanpos+0.3, y = first_analyzer, label = "STDEV"), angle = 90, size = 2.2, color = "#009688", family = "Segoe UI") +
+    
+    
+    
+    
+    annotation_custom(
+      grob = tableGrob(annotation, rows = NULL),
+      xmin = gender_stats %>%
+        filter(hb == "U.L") %>%
+        pull(meanpos)* 1.11,
+      xmax = max(data$U.L)* 1.15,
+      ymin = max(data$x_pos)*0.03,  # Adjust as needed
+      ymax = (max(data$x_pos)*0.07) + 5   # Adjust as needed
+    )  +
+    geom_text(data =data,
+              aes(label = paste("D: ",diff), x = x_pos, y = Author),
+              color = "white",
+              size = 2.5,
+              family = "Segoe UI Semibold") +
+    # theming
+    theme_minimal()+
+    theme(panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          # panel.grid = element_blank(), # Remove this line to show gridlines
+          axis.text.y = element_text(size = 10), # Adjust the size as needed
+          axis.line = element_line(color = "#4a4e4d"), # Add this line to show axes bars
+          text = element_text(family = "Segoe UI Semibold", color = "#4a4e4d"),
+          strip.text.y.left  = element_text(angle = 0),
+          panel.background = element_rect(fill = "white", color = "white"),
+          strip.background = element_rect(fill = "white", color = "white"),
+          strip.text = element_text(color = "#4a4e4d", family = "Segoe UI"),
+          plot.background = element_rect(fill = "white", color = "white"),
+          panel.spacing = unit(0, "lines"),
+          plot.margin = margin(1,1,.5,1, "cm")) +
+    
+    #add subtitle and caption. Change Anaylte_1 to the analyte name
+    labs(title = paste0("<span style = 'color: #F8766D;'>**Variations in Reference Intervals**</span> <br/> Magnesium (", gender, " ", sign, " 18)"),
+         x = "Reference Intervals from Different Clinical Laboratories (mmo/L)",
+         y = "Analyzer",
+         subtitle = paste(
+           data %>% pull(L.L) %>% min(),
+           " ≤ LRL ≤ ",
+           data %>% pull(L.L) %>% max(),
+           ",",
+           data %>% pull(U.L) %>% min(),
+           " ≤ URL ≤ ",  
+           data %>% pull(U.L) %>% max(),
+           ",",
+           data %>% pull(diff) %>% min() ,
+           " ≤ δ ≤ ",
+           data %>% pull(diff) %>% max()
+         )
+    ) +
+    
+    # Add theming for title, subtitle, caption using ggtext
+    theme(plot.caption = element_markdown(hjust = 0, lineheight = 1.5),
+          plot.subtitle = element_markdown(size = 12, hjust = 0.3),
+          plot.title = element_markdown(size = 16, hjust = 0.3)) +
+    scale_y_discrete(labels = rev(as.factor(data$Author))) +
+    coord_cartesian(xlim = c(min(data$L.L), max(data$U.L)* 1.1))-> graph_styled
+  
+  return(graph_styled)
+}
+
+
+
+#Generate all plots
+#Change later to ggsave
+
+
+child_male_graph <- generate_plot(male_data, stats_male,"AA", "AI", male_mean_sd, "Male", "<")
+child_female_graph <- generate_plot(child_female_data, stats_child_female,"AA", "AI", child_female_mean_sd, "Female", "<")
+adult_male_graph <- generate_plot(adult_male_data, stats_adult_male,"AA", "AI", adult_male_mean_sd, "Male", ">")
+adult_female_graph <- generate_plot(adult_female_data, stats_adult_female,"AA", "AI", adult_female_mean_sd, "Female", ">")

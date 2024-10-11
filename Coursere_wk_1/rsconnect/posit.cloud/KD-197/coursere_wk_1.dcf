@@ -1,0 +1,12 @@
+name: coursere_wk_1
+title: Coursere_wk_1
+username: KD-197
+account: KD-197
+server: posit.cloud
+hostUrl: https://api.posit.cloud/v1
+appId: 8118136
+bundleId: 8555461
+url: https://posit.cloud/content/8118136
+version: 1
+asMultiple: FALSE
+asStatic: FALSE

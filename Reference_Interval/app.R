@@ -9,6 +9,11 @@ library(gridExtra)
 library(grDevices)
 library(svglite)
 library(extrafont)
+library(stringr)
+library(DT)
+library(openxlsx)  # New library for Excel operations
+library(patchwork) # For combining plots
+library(viridis)  # For color scales
 
 
 # Load plot choices for biochemistry and hematology
@@ -38,7 +43,9 @@ plotChoices_biochemistry <- c(
   "Potassium",
   "Phosphorus",
   "Calcium",
-  "Magnesium"
+  "Magnesium",
+  "Chloride",
+  "ALT"
 )
 
 
@@ -65,21 +72,30 @@ ui <- fluidPage(
                 accept = c(".csv", ".xls", ".xlsx", "text/csv", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
       radioButtons("category", label = "Select Data Category", choices = c("Biochemistry", "Hematology"), selected = "Biochemistry"),
       uiOutput("selectAnalyte"),
-      textInput("units", label = "Type your units here", value = "mmol/L"),
+      uiOutput("unitsInput"),
       radioButtons("plotType", label = "Select the plot to display", choices = c("Child Male", "Child Female", "Adult Male", "Adult Female")),
       sliderInput("height", "height", min = 400, max = 1400, value = 700),
       sliderInput("width", "width", min = 400, max = 1400, value = 750)
     ),
     mainPanel(
-      downloadButton("downloadPlot", "Download Plot as SVG"),
-      plotOutput("plot"),
-      
-      #tableOutput("value2")
-    )
+      tabsetPanel(
+        tabPanel("Data Preview", 
+                 DTOutput("dataPreview")
+        ),
+        tabPanel("Plot", 
+                 downloadButton("downloadPlot", "Download Plot as SVG"),
+                 plotOutput("plot")
+        ),
+        tabPanel("Processed Data Statistics",  # New Tab for Processed Data Statistics
+                 downloadButton("downloadProcessed", "Download Processed Data Statistics as Excel"),
+                 DTOutput("processedDataPreview")
   )
 )
+)
+)
+)
 
-# Define server logic required to draw a histogram
+# Define server logic 
 server <- function(input, output, session) {
   output$selectAnalyte <- renderUI({
     if (input$category == "Biochemistry") {
@@ -87,6 +103,39 @@ server <- function(input, output, session) {
     } else if (input$category == "Hematology") {
       selectInput("analyte", label = "Select the Analyte data for the plot", choices = plotChoices_hematology)
     }
+  })
+  
+  #Data Preview
+  output$dataPreview <- renderDT({
+    req(input$plotData)
+    data <- readxl::read_excel(input$plotData$datapath, sheet = input$analyte, range = cell_rows(1:100))
+    datatable(data, options = list(pageLength = 10))
+  })
+  
+  defaultUnit <- reactive({
+    req(input$plotData)
+    # Try to read the Units column from the data
+    tryCatch({
+      data <- readxl::read_excel(input$plotData$datapath, sheet = input$analyte)
+      if("Units" %in% names(data)) {
+        # Get the first non-NA value
+        unit <- data$Units[!is.na(data$Units)][1]
+        if(is.null(unit) || is.na(unit) || unit == "") {
+          return("mmol/L") # Default if no valid value found
+        } else {
+          return(unit)
+        }
+      } else {
+        return("mmol/L") # Default if no Units column
+      }
+    }, error = function(e) {
+      return("mmol/L") # Default in case of error
+    })
+  })
+  
+  # Render the units input with the default value from data
+  output$unitsInput <- renderUI({
+    textInput("units", label = "Type your units here", value = defaultUnit())
   })
   
   plottingData <- reactive({
@@ -128,7 +177,7 @@ server <- function(input, output, session) {
   # Process combined data
   all_data <- reactive({ 
     data <- combined_data() %>%
-      mutate(diff = U.L - L.L) %>%
+      mutate(diff = round(U.L - L.L, 3)) %>%
       filter(diff > 0) %>%
       mutate(x_pos = L.L + (diff / 2))
     
@@ -214,10 +263,14 @@ server <- function(input, output, session) {
   
   
   #Generate plot
-  generate_plot <- function(data, gender_age_stats, first_analyzer, last_analyzer, annotation,title, gender, sign, unit) {
+  generate_plot <- function(data, gender_age_stats, first_analyzer, last_analyzer, annotation, title, gender, sign, unit) {
     data$Analyzer <- as.factor(data$Analyzer)
     
-    ggplot(data) +
+    # Calculate the position for table placement
+    max_url <- max(data$U.L) * 1.05  # Position slightly right of the maximum URL
+    
+    # Create the main plot
+    main_plot <- ggplot(data) +
       geom_rect(aes(xmin = gender_age_stats %>%
                       filter(hb == "U.L") %>%
                       pull(meanneg),
@@ -251,19 +304,6 @@ server <- function(input, output, session) {
       geom_point(aes(x = L.L, y = reorder(Analyzer, ord), color = "#F8766D"), size = 4.5, show.legend = FALSE) +
       geom_point(aes(x = U.L, y = reorder(Analyzer, ord), color = "#00BFC4"), size = 4.5, show.legend = FALSE) +
       scale_color_manual(values = c("#00BFC4", "#F8766D")) +
-      annotation_custom(
-        grob = tableGrob(annotation, rows = NULL),
-        xmin = max(data$U.L) * 1.1,
-        xmax = max(data$U.L) * 1.2,
-        ymin = data %>%
-          slice_max(order_by = Analyzer, n = 7)%>%  # Take the first (i.e., last) value
-          pull(Analyzer) %>%
-          tail(n = 1),
-        ymax = data %>%
-          slice_max(order_by = Analyzer, n = 8) %>%  # Take the first (i.e., last) value
-          pull(Analyzer) %>%
-          tail(n = 1)
-      ) +
       geom_text(data = data,
                 aes(label = paste("D: ", diff), x = x_pos, y = Analyzer),
                 color = "white", size = 2.5, family = "Segoe UI Semibold") +
@@ -276,20 +316,15 @@ server <- function(input, output, session) {
         axis.text.y = element_text(size = 10),
         axis.line = element_line(color = "#4a4e4d"),
         text = element_text(family = "Segoe UI Semibold", color = "#4a4e4d"),
-        strip.text.y.left = element_text(angle = 0),
-        panel.background = element_rect(fill = "white", color = "white"),
-        strip.background = element_rect(fill = "white", color = "white"),
-        strip.text = element_text(color = "#4a4e4d", family = "Segoe UI"),
         plot.background = element_rect(fill = "white", color = "white"),
-        panel.spacing = unit(0, "lines"),
-        plot.margin = margin(1, 1, 0.5, 1, "cm"),
+        plot.margin = margin(1, 1, 0.2, 1, "cm"),
         plot.caption = element_markdown(hjust = 0, lineheight = 1.5),
         plot.subtitle = element_markdown(size = 12, hjust = 0.3),
         plot.title = element_markdown(size = 16, hjust = 0.3)
       ) +
       labs(
-        title = paste0("<span style = 'color: #F8766D;'>**Variations in Reference Intervals**</span> <br/> ",title," (", gender, " ", sign, " 18)"),
-        x = paste("Reference Intervals from Different Clinical Laboratories (",unit,")"),
+        title = paste0("<span style = 'color: #F8766D;'>**Variations in Reference Intervals**</span> <br/> ", title, " (", gender, " ", sign, " 18)"),
+        x = paste("Reference Intervals from Different Clinical Laboratories (", unit, ")"),
         y = "Analyzer",
         subtitle = paste(
           data %>% pull(L.L) %>% min(),
@@ -300,16 +335,34 @@ server <- function(input, output, session) {
           " ≤ URL ≤ ",
           data %>% pull(U.L) %>% max(),
           ",",
-          data %>% pull(diff) %>% min(),
+          data %>% pull(diff) %>% min() %>% round(2),
           " ≤ δ ≤ ",
           data %>% pull(diff) %>% max()
         )
       ) +
       scale_y_discrete(labels = rev(as.factor(data$vendor))) +
-      coord_cartesian(xlim = c(min(data$L.L), max(data$U.L) * 1.3))-> graph_styled
+      coord_cartesian(xlim = c(min(data$L.L), max(data$U.L) * 1.2))  # Extended x-axis to make room for table
     
-    return(graph_styled)
+    # Create the tableGrob
+    annotation_table <- tableGrob(annotation, rows = NULL)
+    
+    # Add the table to the bottom right of the main plot
+    table_x <- max_url*1.06
+    table_y <- min(as.numeric(data$ord)) * 0.05  # Position near the bottom of the plot
+    
+    # Add the table as an annotation to the main plot
+    main_plot <- main_plot +
+      annotation_custom(
+        grob = annotation_table,
+        xmin = table_x,
+        xmax = table_x + (max(data$U.L) - min(data$L.L)) * 0.15,  # Table width
+        ymin = table_y,
+        ymax = table_y + nrow(data) * 0.25  # Table height
+      )
+    
+    return(main_plot)
   }
+  
   
   plot_child_Male <- reactive({
     generate_plot(child_Male(), stats_child_male(),"AA", "AI", child_male_mean_sd(),input$analyte, "Male", "<", input$units)
@@ -376,10 +429,11 @@ server <- function(input, output, session) {
     }
   )
   
+  #Processed Data Statistics
+  
   
 }
 
 # Run the application 
 shinyApp(ui = ui, server = server)
-
 
